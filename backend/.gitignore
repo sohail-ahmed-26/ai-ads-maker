@@ -1,0 +1,8 @@
+node_modules/
+.env
+uploads/
+generated/scripts/
+generated/audio/
+generated/subtitles/
+generated/video/
+npm-debug.log
