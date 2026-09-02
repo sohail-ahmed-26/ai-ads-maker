@@ -4,7 +4,7 @@ import fsSync from 'fs';
 import path from 'path';
 import https from 'https';
 import http from 'http';
-import { composeVideo } from '../utils/ffmpeg.utils.js';
+import { composeVideo, getMediaDuration, concatenateClips } from '../utils/ffmpeg.utils.js';
 
 
 let ai = null;
@@ -12,7 +12,7 @@ let ai = null;
 function getAI() {
     if (!ai) {
         if (!process.env.GEMINI_API_KEY) {
-            throw new Error('Missing Gemini API Key — server configuration error.');
+            throw new Error('Missing Veo API Key — server configuration error.');
         }
         ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     }
@@ -95,8 +95,18 @@ export const generateVideo = async (projectId, userInstructions) => {
         throw new Error('Approved voice file not found on disk.');
     }
 
-    // 3. Load approved script text (approved.txt contains the actual script text, not a filename)
-    const scriptText = await readFile('scripts', 'approved.txt');
+    // 3. Load approved script text (try to load from audio metadata to ensure single source of truth)
+    let scriptText;
+    try {
+        const metadataRaw = await readFile('audio', `${approvedAudioId}.json`);
+        const metadata = JSON.parse(metadataRaw);
+        scriptText = metadata.scriptText;
+        console.log('[Video Service] Using single-source-of-truth script from audio metadata.');
+    } catch (err) {
+        console.warn('[Video Service] Voice metadata not found, falling back to global approved script.');
+        scriptText = await readFile('scripts', 'approved.txt');
+    }
+
     if (!scriptText) {
         throw new Error('No approved script found. Please approve a script before generating video.');
     }
@@ -116,77 +126,108 @@ export const generateVideo = async (projectId, userInstructions) => {
     const mimeType = ext === 'jpg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'image/webp';
 
 
-    // 5. Build the Veo prompt
-    const safeInstructions = (userInstructions || '').replace(/[`$\\]/g, ''); // sanitize
-    const videoPrompt = [
-        `Create a professional 9:16 vertical product advertisement video.`,
-        `The product is shown in the reference image. Animate it elegantly with cinematic movement.`,
-        `Marketing context from the approved script: "${scriptText.slice(0, 300)}"`,
-        safeInstructions ? `Additional direction: ${safeInstructions}` : '',
-        `Style: Premium advertisement, smooth camera motion, beautiful lighting, commercial quality.`,
-        `Do NOT add any spoken audio — the advertisement's narration will be added separately.`
-    ].filter(Boolean).join('\n');
-
-    // 6. Submit Veo generation (image-to-video)
-    console.log('[Video Service] Submitting Veo generation request...');
-    let operation;
+    // 5. Calculate Voice Duration and Determine Scenes
+    let voiceDuration = 5.0;
     try {
-        operation = await api.models.generateVideos({
-            model: 'veo-3.1-generate-preview',
-            source: {
-                prompt: videoPrompt,
-                image: {
-                    imageBytes: imageBase64,
-                    mimeType: mimeType,
-                }
-            },
-            config: {
-                numberOfVideos: 1,
-                durationSeconds: 8,
-                aspectRatio: '9:16',
-                resolution: '720p',
-            }
-        });
+        voiceDuration = await getMediaDuration(audioPath);
+        console.log(`[Video Service] Voice duration is ${voiceDuration.toFixed(2)} seconds.`);
     } catch (err) {
-        console.error('[Video Service] Veo generation error:', err.message);
-        throw new Error(`Veo generation failed: ${err.message}`);
+        console.warn('[Video Service] Could not determine voice duration, defaulting to 5s.', err.message);
     }
+    
+    // Wan creates ~5.37s clips. We'll divide into 5-second scenes to cover the voice length.
+    const wanClipLimit = 5.0;
+    const numScenes = Math.max(1, Math.ceil(voiceDuration / wanClipLimit));
+    console.log(`[Video Service] Planning ${numScenes} scene(s) to cover the advertisement.`);
 
-    // 7. Poll the long-running operation
-    console.log('[Video Service] Operation started. Polling for completion...');
-    const maxPolls = 30;
-    const pollIntervalMs = 10000; // 10 seconds
-    let polls = 0;
+    const safeInstructions = (userInstructions || '').replace(/[`$\\]/g, '').trim();
+    const hasMotionKeywords = /move|pan|zoom|tilt|dolly|rotate|push|pull|walk|run|turn|slide|cinematic|camera/i.test(safeInstructions);
+    
+    // Split script into chunks (roughly equal size by characters for simplicity, ideally by sentences but this works reliably)
+    const scriptLength = scriptText.length;
+    const chunkSize = Math.ceil(scriptLength / numScenes);
 
-    while (!operation.done && polls < maxPolls) {
-        polls++;
-        console.log(`[Video Service] Polling ${polls}/${maxPolls}...`);
-        await new Promise(r => setTimeout(r, pollIntervalMs));
-        try {
-            operation = await api.operations.get(operation);
-        } catch (err) {
-            throw new Error(`Polling failed: ${err.message}`);
+    const imagePrefix = `data:${mimeType};base64,`;
+    const imageUri = imagePrefix + imageBase64;
+    const videoUrls = [];
+
+    for (let i = 0; i < numScenes; i++) {
+        console.log(`[Video Service] Generating Scene ${i + 1}/${numScenes}...`);
+        const chunkStart = i * chunkSize;
+        const chunkEnd = Math.min(scriptLength, (i + 1) * chunkSize);
+        const scriptSegment = scriptText.slice(chunkStart, chunkEnd);
+
+        const fallbackMotion = hasMotionKeywords ? '' : 
+            `Create a continuous cinematic advertisement shot. The camera performs a smooth, slow push-in toward the product while maintaining stable framing. Subtle natural movement continues in the background (e.g., light reflections changing, gentle breeze). The scene must evolve throughout the shot rather than remaining static.`;
+
+        const sceneContext = `Scene ${i + 1} of ${numScenes}. Narrative context for this scene: "${scriptSegment}"`;
+        
+        const videoPrompt = [
+            safeInstructions ? `${safeInstructions}` : '',
+            fallbackMotion,
+            sceneContext,
+            ``,
+            `Technical Rules:`,
+            `- This is a video scene. The subject and environment must exhibit continuous visible motion throughout the clip. Do not produce a static image-like result.`,
+            `- Generate continuous video motion with physically plausible movement.`,
+            `- Preserve the identity, colors, and text of the product in the supplied image.`,
+            `- Maintain temporal continuity with previous scenes.`,
+            `- Do NOT add any spoken audio or text overlays.`
+        ].filter(Boolean).join('\n');
+
+        if (!process.env.WAN_API_KEY) {
+            throw new Error('WAN_API_KEY is not set in the environment.');
         }
+
+        const submitRes = await fetch('https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.WAN_API_KEY}`,
+                'X-DashScope-Async': 'enable',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'wan2.1-i2v-turbo',
+                input: {
+                    img_url: imageUri,
+                    prompt: videoPrompt
+                }
+            })
+        });
+
+        const submitData = await submitRes.json();
+        if (!submitRes.ok || submitData.code) {
+            throw new Error(submitData.message || submitData.code || `Failed to submit Wan task for scene ${i+1}`);
+        }
+        
+        const taskId = submitData.output.task_id;
+        console.log(`[Video Service] Scene ${i + 1} Wan task submitted. Task ID: ${taskId}`);
+
+        let sceneVideoUrl = null;
+        let polls = 0;
+        while (polls < 60) {
+            polls++;
+            if (polls % 3 === 0) console.log(`[Video Service] Scene ${i + 1} Polling ${polls}/60...`);
+            await new Promise(r => setTimeout(r, 10000));
+            
+            const pollRes = await fetch(`https://dashscope-intl.aliyuncs.com/api/v1/tasks/${taskId}`, {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${process.env.WAN_API_KEY}` }
+            });
+            const pollData = await pollRes.json();
+            
+            if (pollData.output.task_status === 'SUCCEEDED') {
+                sceneVideoUrl = pollData.output.video_url;
+                break;
+            } else if (pollData.output.task_status === 'FAILED' || pollData.output.task_status === 'UNKNOWN') {
+                throw new Error(pollData.output.message || pollData.output.code || `Wan task failed for scene ${i+1}`);
+            }
+        }
+        if (!sceneVideoUrl) throw new Error(`Scene ${i+1} timed out.`);
+        videoUrls.push(sceneVideoUrl);
     }
 
-    if (!operation.done) {
-        throw new Error('Video generation timed out. Please try again.');
-    }
-
-    // 8. Extract video URL from operation response
-    const generatedVideos = operation.response?.generatedVideos;
-    if (!generatedVideos || generatedVideos.length === 0) {
-        throw new Error('Veo returned no generated videos. Possibly filtered by safety policy.');
-    }
-
-    const videoData = generatedVideos[0];
-    // The video object may have .video.uri (a GCS URI) or .uri for Gemini Developer API
-    const videoUri = videoData?.video?.uri || videoData?.uri;
-    if (!videoUri) {
-        throw new Error('No video URI in Veo response.');
-    }
-
-    // 9. Download visual video
+    // 9. Download visual video clips and concatenate
     const timestamp = Date.now();
     const versionSuffix = Math.random().toString(36).substring(2, 8);
     const visualFileName = `visual-${projectId}-${timestamp}-${versionSuffix}.mp4`;
@@ -194,14 +235,31 @@ export const generateVideo = async (projectId, userInstructions) => {
 
     await fs.mkdir(path.dirname(visualVideoPath), { recursive: true });
 
-    // Append API key for authenticated download from Gemini Developer API
-    const downloadUrl = videoUri.includes('?')
-        ? `${videoUri}&key=${process.env.GEMINI_API_KEY}`
-        : `${videoUri}?key=${process.env.GEMINI_API_KEY}`;
+    console.log(`[Video Service] Downloading ${videoUrls.length} visual clip(s)...`);
+    const clipPaths = [];
+    for (let i = 0; i < videoUrls.length; i++) {
+        const clipPath = path.join(process.cwd(), 'generated', 'video', `clip-${i}-${timestamp}.mp4`);
+        await downloadFile(videoUrls[i], clipPath);
+        await validateFile(clipPath, `Visual clip ${i+1}`);
+        clipPaths.push(clipPath);
+    }
 
-    console.log('[Video Service] Downloading visual video...');
-    await downloadFile(downloadUrl, visualVideoPath);
-    await validateFile(visualVideoPath, 'Visual video');
+    if (clipPaths.length > 1) {
+        console.log('[Video Service] Concatenating clips...');
+        try {
+            await concatenateClips(clipPaths, visualVideoPath);
+            // clean up individual clips
+            for (const cp of clipPaths) {
+                try { await fs.unlink(cp); } catch (e) {}
+            }
+        } catch (err) {
+            throw new Error(`Failed to concatenate scenes: ${err.message}`);
+        }
+    } else {
+        // Just rename the single clip
+        await fs.rename(clipPaths[0], visualVideoPath);
+    }
+    await validateFile(visualVideoPath, 'Master visual video');
 
     // 10. FFmpeg: compose final video (approved voice replaces/adds to video audio)
     const finalFileName = `final-${projectId}-${timestamp}-${versionSuffix}.mp4`;

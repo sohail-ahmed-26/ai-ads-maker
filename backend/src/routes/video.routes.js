@@ -17,9 +17,15 @@ router.post('/generate', async (req, res) => {
         return res.json({ success: true, data: result });
     } catch (err) {
         console.error('[Video Route Error]', err.message);
+        
+        if (err.isQuotaError || (err.message && err.message.includes('quota has been exceeded'))) {
+            return res.status(429).json({ success: false, message: err.message });
+        }
+
         const isClientError = [
             'Invalid', 'Missing', 'not found', 'No approved', 'timed out'
         ].some(w => err.message.includes(w));
+        
         return res.status(isClientError ? 400 : 500).json({ success: false, message: err.message });
     }
 });

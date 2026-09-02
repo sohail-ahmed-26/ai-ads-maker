@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://localhost:3000/api';
+const API_BASE_URL = '/api';
 
 /**
  * Uploads the product photo and description to the backend.
@@ -16,10 +16,16 @@ export const uploadProductData = async (file, description) => {
         body: formData
     });
 
-    const data = await response.json();
-    
+    const text = await response.text();
+    let data;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch (err) {
+        throw new Error(`Upload API returned non-JSON response (Status ${response.status}): ${text.slice(0, 100)}`);
+    }
+
     if (!response.ok) {
-        throw new Error(data.message || 'Upload failed');
+        throw new Error(data.message || `Upload failed with status ${response.status}`);
     }
 
     return data;
@@ -34,9 +40,17 @@ const fetchJson = async (endpoint, payload) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     });
-    const data = await response.json();
+    
+    const text = await response.text();
+    let data;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch (err) {
+        throw new Error(`API returned non-JSON response (Status ${response.status}): ${text.slice(0, 100)}`);
+    }
+
     if (!response.ok) {
-        throw new Error(data.message || 'API request failed');
+        throw new Error(data.message || `API request failed with status ${response.status}`);
     }
     return data;
 };
@@ -67,6 +81,24 @@ export const approveVoice = (audioId) =>
 
 export const getVoiceAudioUrl = (audioId) => 
     `${API_BASE_URL}/voice/audio/${audioId}`;
+
+export const getVoiceTiming = (audioId) =>
+    fetchJson(`/voice/timing/${audioId}`, {}); // assuming it's a POST, or maybe a GET. Wait, the user said `GET /api/voice/timing/:id`. 
+// I should make it a fetch call for GET. Wait, fetchJson is for POST. I'll write a fetch call.
+
+export const fetchVoiceTiming = async (audioId) => {
+    const response = await fetch(`${API_BASE_URL}/voice/timing/${audioId}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.message || 'Failed to fetch voice timing');
+    }
+    return data;
+};
+
+// ─── Subtitle API ──────────────────────────────────────────────────────────────
+
+export const generateSubtitle = (audioId) =>
+    fetchJson('/subtitle/generate', { audioId });
 
 // ─── Video API ─────────────────────────────────────────────────────────────────
 

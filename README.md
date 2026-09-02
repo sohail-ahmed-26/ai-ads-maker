@@ -64,38 +64,38 @@
   <tr>
     <td align="center" width="50%">
       <h4>1. Upload & Analysis</h4>
-      <img src="./screenshots/1.jpg" width="90%" alt="Upload" />
+      <img src="./frontend/screenshots/1.jpg" width="90%" alt="Upload" />
     </td>
     <td align="center" width="50%">
       <h4>2. Script Generation</h4>
-      <img src="./screenshots/2.jpg" width="90%" alt="Script" />
+      <img src="./frontend/screenshots/2.jpg" width="90%" alt="Script" />
     </td>
   </tr>
   <tr>
     <td align="center">
       <h4>3. Voice Synthesis</h4>
-      <img src="./screenshots/3.jpg" width="90%" alt="Voice" />
+      <img src="./frontend/screenshots/3.jpg" width="90%" alt="Voice" />
     </td>
     <td align="center">
       <h4>4. Scene Planning</h4>
-      <img src="./screenshots/4.jpg" width="90%" alt="Scenes" />
+      <img src="./frontend/screenshots/4.jpg" width="90%" alt="Scenes" />
     </td>
   </tr>
   <tr>
     <td align="center">
       <h4>5. Dynamic Rendering</h4>
-      <img src="./screenshots/5.jpg" width="90%" alt="Render" />
+      <img src="./frontend/screenshots/5.jpg" width="90%" alt="Render" />
     </td>
     <td align="center">
       <h4>6. Synchronization</h4>
-      <img src="./screenshots/6.jpg" width="90%" alt="Sync" />
+      <img src="./frontend/screenshots/6.jpg" width="90%" alt="Sync" />
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center">
       <h4>7. Final Playable Advertisement</h4>
       <br/>
-      <img src="./screenshots/7.jpg" width="80%" alt="Final Ad" />
+      <img src="./frontend/screenshots/7.jpg" width="80%" alt="Final Ad" />
     </td>
   </tr>
 </table>

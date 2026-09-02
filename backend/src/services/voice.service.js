@@ -90,6 +90,14 @@ export const generateVoice = async (scriptId) => {
         await fs.mkdir(path.dirname(audioPath), { recursive: true });
         await fs.writeFile(audioPath, wavBuffer);
 
+        const metadataPath = path.join(process.cwd(), 'generated', 'audio', `${audioFileName}.json`);
+        const metadata = {
+            scriptId: scriptId,
+            scriptText: scriptText,
+            timestamp: timestamp
+        };
+        await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
+
         return {
             audioId: audioFileName,
             version: timestamp, // Using timestamp as version
